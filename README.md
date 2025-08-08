@@ -17,7 +17,7 @@
 
 ## 기술 스택
 
-- **LangChain**: 체인 구성, 문서 검색, 프롬프트 템플릿 관리
+- **LangChain**: 체인 구성, 문서 검색, 프롬프트 템플릿 관리, 채팅 히스토리 저장
 - **LangGraph**: LLM 흐름제어
 - **Azure OpenAI**: GPT 기반 스펙 생성 및 답변
 - **Azure AI Search**: 사내 가이드 문서 벡터 인덱싱
@@ -28,7 +28,7 @@
 
 ## 시스템 구성
 
-![mvp.drawio](.\asset\mvp.drawio.png)
+![mvp.drawio](./asset/mvp.drawio.png)
 
 
 
@@ -55,7 +55,7 @@ generate_spec
 * AS-IS 스펙을 받아 TO-BE 설계를 해주는 노드입니다. 
 * `gpt-4.1-mini` + RAG를 사용하여 요청한 정책을 찾고 해당 정책을 기준으로 `gpt-4.1`에 요청하여 상세 스펙을 뽑아냅니다.
 
-![output](.\asset\output.png)
+![output](./asset/output.png)
 
 ------
 
@@ -63,10 +63,10 @@ generate_spec
 
 ### 일반 질문시
 
-![qa](.\asset\qa.png)
+![qa](./asset/qa.png)
 
 
 
 ### TOBE 스펙 생성 요청시
 
-![spec](.\asset\spec.png)
+![spec](./asset/spec.png)

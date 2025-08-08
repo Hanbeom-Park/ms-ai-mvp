@@ -1,8 +1,34 @@
 from typing import Any, Dict
 import pandas as pd
+import re
 from langchain.callbacks.base import BaseCallbackHandler
 import streamlit as st
 from agent import create_agent_graph
+
+def preprocess_dynamic(df: pd.DataFrame) -> list:
+    # 1. 컬럼명 표준화
+    new_columns = []
+    for col in df.columns:
+        col_clean = col.strip().lower()                  # 공백 제거 + 소문자
+        col_clean = re.sub(r"\s+", "_", col_clean)        # 여러 공백 → "_"
+        col_clean = col_clean.replace("%", "pct")         # % → pct
+        col_clean = col_clean.replace("(", "").replace(")", "")
+        new_columns.append(col_clean)
+    df.columns = new_columns
+
+    # 2. 값 전처리 (단위 변환 없음)
+    for col in df.columns:
+        if df[col].dtype == object:
+            df[col] = df[col].astype(str).str.strip()  # 문자열 공백 제거
+        df[col] = df[col].fillna("")  # NaN → 빈 문자열
+
+    # 3. 중복 제거
+    df = df.drop_duplicates()
+
+    # 4. JSON 변환
+    json_data = df.to_dict(orient="records")
+    return json_data
+
 
 # Custom callback handler for Streamlit streaming
 class StreamlitCallbackHandler(BaseCallbackHandler):
@@ -83,12 +109,8 @@ if "filtered_df" not in st.session_state:
     st.session_state.filtered_df = None
 if "selected_columns" not in st.session_state:
     st.session_state.selected_columns = None
-if "user_notes" not in st.session_state:
-    st.session_state.user_notes = ""
-if "debug_mode" not in st.session_state:
-    st.session_state.debug_mode = False
-if "saved_configs" not in st.session_state:
-    st.session_state.saved_configs = {}
+if "json_data" not in st.session_state:
+    st.session_state.json_data = None
 
 # 파일 처리 함수
 def process_file(file):
@@ -98,13 +120,13 @@ def process_file(file):
         else:  # Excel 파일
             df = pd.read_excel(file)
         
-        # 여기서 데이터 처리 로직을 추가할 수 있습니다
-        # 예: 간단한 통계 계산, 데이터 정리 등
+        # preprocess_dynamic 메서드를 사용하여 JSON 형태로 전처리
+        json_data = preprocess_dynamic(df)
         
-        return df
+        return df, json_data
     except Exception as e:
         st.sidebar.error(f"파일 처리 중 오류가 발생했습니다: {e}")
-        return None
+        return None, None
 
 
 # 파일이 업로드되면 처리
@@ -112,110 +134,19 @@ if uploaded_file is not None:
     st.sidebar.info(f"파일 '{uploaded_file.name}'이(가) 업로드되었습니다.")
     
     # 파일 처리
-    processed_df = process_file(uploaded_file)
+    processed_df, json_data = process_file(uploaded_file)
     if processed_df is not None:
         st.session_state.processed_data = processed_df
+        st.session_state.json_data = json_data
         
         # 데이터 미리보기
         st.sidebar.subheader("데이터 미리보기")
         st.sidebar.dataframe(processed_df.head())
         
-        # 분석할 컬럼 선택 옵션 추가
-        st.sidebar.subheader("분석 옵션")
+        # 기본 컬럼 정보 설정
         all_columns = processed_df.columns.tolist()
-        selected_columns = st.sidebar.multiselect(
-            "분석할 컬럼 선택 (선택하지 않으면 모든 컬럼 사용)",
-            options=all_columns,
-            default=[]
-        )
-        
-        # 데이터 필터링 옵션 추가
-        st.sidebar.subheader("데이터 필터링")
-        filter_column = st.sidebar.selectbox(
-            "필터링할 컬럼 선택 (선택 사항)",
-            options=["없음"] + all_columns
-        )
-        
-        # 선택한 컬럼에 따라 필터 값 선택 UI 표시
-        if filter_column != "없음":
-            unique_values = processed_df[filter_column].unique()
-            if len(unique_values) <= 20:  # 고유 값이 적은 경우 다중 선택 제공
-                filter_values = st.sidebar.multiselect(
-                    f"{filter_column} 값 선택",
-                    options=unique_values,
-                    default=[]
-                )
-                if filter_values:
-                    st.session_state.filtered_df = processed_df[processed_df[filter_column].isin(filter_values)]
-                else:
-                    st.session_state.filtered_df = processed_df
-            else:  # 고유 값이 많은 경우 텍스트 검색 제공
-                filter_text = st.sidebar.text_input(f"{filter_column} 검색 (부분 일치)")
-                if filter_text:
-                    st.session_state.filtered_df = processed_df[processed_df[filter_column].astype(str).str.contains(filter_text, case=False)]
-                else:
-                    st.session_state.filtered_df = processed_df
-        else:
-            st.session_state.filtered_df = processed_df
-        
-        # 필터링된 데이터 미리보기
-        if filter_column != "없음":
-            st.sidebar.subheader("필터링된 데이터")
-            st.sidebar.write(f"필터링된 행 수: {len(st.session_state.filtered_df)}")
-            st.sidebar.dataframe(st.session_state.filtered_df.head())
-        
-        # 사용자 노트 입력 필드 추가
-        st.sidebar.subheader("분석 노트")
-        user_notes = st.sidebar.text_area(
-            "데이터에 대한 추가 정보나 분석 지시사항을 입력하세요",
-            value=st.session_state.get("user_notes", ""),
-            height=100
-        )
-        st.session_state.user_notes = user_notes
-        
-        # 설정 저장 및 불러오기 기능
-        st.sidebar.subheader("설정 관리")
-        
-        # 설정 저장
-        config_name = st.sidebar.text_input("저장할 설정 이름")
-        if st.sidebar.button("현재 설정 저장") and config_name:
-            st.session_state.saved_configs[config_name] = {
-                "selected_columns": selected_columns if selected_columns else all_columns,
-                "filter_column": filter_column,
-                "user_notes": user_notes
-            }
-            
-            # 필터 값도 저장
-            if filter_column != "없음":
-                if len(processed_df[filter_column].unique()) <= 20:
-                    st.session_state.saved_configs[config_name]["filter_values"] = filter_values if 'filter_values' in locals() else []
-                else:
-                    st.session_state.saved_configs[config_name]["filter_text"] = filter_text if 'filter_text' in locals() else ""
-            
-            st.sidebar.success(f"설정 '{config_name}'이(가) 저장되었습니다.")
-        
-        # 설정 불러오기
-        if st.session_state.saved_configs:
-            load_config = st.sidebar.selectbox(
-                "저장된 설정 불러오기",
-                ["선택하세요..."] + list(st.session_state.saved_configs.keys())
-            )
-            
-            if load_config != "선택하세요..." and st.sidebar.button("설정 불러오기"):
-                config = st.session_state.saved_configs[load_config]
-                st.session_state.selected_columns = config["selected_columns"]
-                st.session_state.user_notes = config["user_notes"]
-                st.sidebar.success(f"설정 '{load_config}'이(가) 불러와졌습니다. 페이지를 새로고침하세요.")
-        
-        # 디버그 모드 옵션 추가
-        debug_mode = st.sidebar.checkbox("디버그 모드 (입력 데이터 표시)", value=False)
-        st.session_state.debug_mode = debug_mode
-        
-        # 선택된 컬럼 정보 저장
-        if selected_columns:
-            st.session_state.selected_columns = selected_columns
-        else:
-            st.session_state.selected_columns = all_columns
+        st.session_state.selected_columns = all_columns
+        st.session_state.filtered_df = processed_df
         
         
         # 에이전트에게 파일 내용에 대해 질문하도록 안내
@@ -275,10 +206,6 @@ if prompt := st.chat_input("메시지를 입력하세요..."):
         null_counts = df_selected.isnull().sum()
         null_info = "\n\n결측치 정보:\n" + "\n".join([f"{col}: {null_counts[col]}개" for col in selected_cols])
         
-        # 사용자 노트 추가
-        user_notes_section = ""
-        if st.session_state.user_notes.strip():
-            user_notes_section = f"\n\n사용자 분석 노트:\n{st.session_state.user_notes}"
         
         # 서비스 정보 추가
         service_info = "\n\n서비스 정보:"
@@ -290,7 +217,10 @@ if prompt := st.chat_input("메시지를 입력하세요..."):
             service_info += f"\n- 서비스 약어: {service_abbr}"
         service_info += f"\n- NAS 사용 여부: {'예' if nas_usage else '아니오'}"
         
-        enhanced_prompt = f"{prompt}\n\n[파일 컨텍스트: {file_info}\n\n데이터 샘플:\n{data_sample}{stats_info}{dtypes_info}{null_info}{user_notes_section}{service_info}]"
+        # JSON 데이터 추가 (최대 10개 항목)
+        json_sample = str(st.session_state.json_data[:10]) if st.session_state.json_data else ""
+        
+        enhanced_prompt = f"{prompt}\n\n[파일 컨텍스트: {file_info}\n\n데이터 샘플:\n{data_sample}{stats_info}{dtypes_info}{null_info}\n\nJSON 데이터:\n{json_sample}{service_info}]"
     else:
         # 파일이 없는 경우에도 서비스 정보 추가
         service_info = "\n\n서비스 정보:"
@@ -303,10 +233,6 @@ if prompt := st.chat_input("메시지를 입력하세요..."):
         service_info += f"\n- NAS 사용 여부: {'예' if nas_usage else '아니오'}"
         enhanced_prompt = f"{prompt}{service_info}"
     
-    # 디버그 모드가 활성화된 경우 전체 프롬프트 표시
-    if st.session_state.debug_mode and st.session_state.processed_data is not None:
-        with st.expander("에이전트에 전달되는 입력 데이터", expanded=True):
-            st.text(enhanced_prompt)
     
     with st.chat_message("assistant"):
         # Create a placeholder for streaming output
@@ -323,7 +249,7 @@ if prompt := st.chat_input("메시지를 입력하세요..."):
             )
             
             # Get the final answer - extract only the "answer" field from AgentState
-            answer = response.get("answer", "") if isinstance(response, dict) else str(response)
+            answer = response.get("answer", "")
             
             # Save to session state
             st.session_state.messages.append({"role": "assistant", "content": answer})
