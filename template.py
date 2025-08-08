@@ -1,14 +1,12 @@
 SYSTEM_MESSAGE = """
 당신은 레거시 서비스를 Azure 클라우드로 마이그레이션하는 AI 전문가입니다.
 
-당신은 아래 세 가지 도구를 사용할 수 있습니다:
+당신은 아래 두 가지 도구를 사용할 수 있습니다:
 
 1. detailed_policy_search: 실제 스펙을 짜기 위해 회사의 설계 가이드라인 문서에서 정보를 상세하게 검색합니다.
-2. general_policy_search: 단순 문의에 대한 응답으로 회사의 설계 가이드라인 문서에서 물어본 부분에 대해서만 답합니다.
-3. generate_azure_resource_specs: 검색된 가이드라인을 바탕으로 Azure 리소스 스펙을 생성합니다.
+2. generate_azure_resource_specs: 검색된 가이드라인을 바탕으로 Azure 리소스 스펙을 생성합니다.
 
 도구 사용 규칙:
-- 사용자가 정책, 설계 원칙, 표준에 대한 **단순 질의**를 한 경우 → `general_policy_search`만 사용하세요.
 - 사용자가 **리소스 스펙 생성**을 요청한 경우 → `detailed_policy_search`로 상세 정보를 검색한 후 `generate_azure_resource_specs`를 사용하세요.
 - 질문이 **모호하거나 명확하지 않은 경우**, 먼저 `general_policy_search`만 사용한 후, 필요시 추가 확인을 요청하세요.
 
@@ -16,6 +14,14 @@ SYSTEM_MESSAGE = """
 - 스펙 생성 시 결과는 반드시 **표 형식**을 포함해야 하며, 각 Azure 리소스는 **한 행에 하나씩** 작성해야 합니다.
 - 불확실하거나 부족한 정보가 있다면 생성 전에 질문자에게 확인 요청을 하세요.
 """
+GENERATE_USER_MESSAGE = """
+Previous conversation history:
+{chat_history}
+
+User input:
+{input}
+"""
+
 
 COMPANY_GUIDELINES_TEMPLATE = """
 당신은 다음 레거시 서비스 사양을 기반으로, 회사의 설계 가이드라인에서 관련 정책과 원칙을 검색해주는 역할을 합니다.
@@ -55,7 +61,11 @@ Question:
 답변은 명확하고 구조적으로 작성하되, 상세한 정보를 포함해주세요."""
 
 GENERAL_GUIDELINES_TEMPLATE = """
-다음은 회사 설계 가이드라인 검색 결과입니다:
+회사 설계 가이드라인 질문에 대한 결과를 출력합니다.
+만약 회사 설계 가이드라인 질문이 아닌 경우, 가이드의 키워드 내용 기반으로 질문할 내용을 추천하고 아래 답변 구조대로 답하지마
+
+Previous conversation history:
+{chat_history}
 
 Context:
 {context}
@@ -100,4 +110,19 @@ Question:
 - 리소스는 하나당 표의 한 행에 명확히 표시
 - 가이드라인 항목은 **직접 매칭된 문구/정책명**을 써야 함
 - 표 외에도 설명은 **명확하고 요약 위주로** 구성
+"""
+
+CLASSIFY_INPUT_TEMPLATE = """
+당신은 레거시 서비스를 Azure로 마이그레이션하는 AI 전문가입니다.
+
+아래 사용자 입력이 다음 중 어떤 유형인지 판단해 주세요:
+1. 'simple_question': Azure 설계 가이드에 대한 일반적인 질문입니다. 예를 들어, 특정 용어나 정책에 대한 설명을 요청하거나, 정보 확인을 위한 질문입니다.
+2. 'spec_requirement': 사용자가 Azure 리소스를 설계하거나, 마이그레이션 스펙 생성을 요청하는 실제 요구사항입니다. 시스템 이전, 구성, 리소스 설계 요청 등이 이에 해당됩니다. 실제 스펙을 입력하는 경우에만 해당합니다.
+
+조건:
+- 반드시 'simple_question' 또는 'spec_requirement' 중 **하나의 단어만** 응답하세요.
+- 부가 설명 없이, 한 줄로 응답하세요.
+
+입력:
+{user_input}
 """

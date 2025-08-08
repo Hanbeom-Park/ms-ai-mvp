@@ -2,7 +2,7 @@ from typing import Any, Dict
 import pandas as pd
 from langchain.callbacks.base import BaseCallbackHandler
 import streamlit as st
-from agent import create_agent
+from agent import create_agent_graph
 
 # Custom callback handler for Streamlit streaming
 class StreamlitCallbackHandler(BaseCallbackHandler):
@@ -48,9 +48,9 @@ st.title("Azure Migration Agent")
 
 # 서비스 정보 세션 상태 초기화
 if "service_type" not in st.session_state:
-    st.session_state.service_type = "VM 기반 서비스"
+    st.session_state.service_type = None
 if "network_type" not in st.session_state:
-    st.session_state.network_type = "공인망 연동"
+    st.session_state.network_type = None
 if "service_abbr" not in st.session_state:
     st.session_state.service_abbr = ""
 if "nas_usage" not in st.session_state:
@@ -58,8 +58,10 @@ if "nas_usage" not in st.session_state:
 
 # 추가 정보 입력 섹션
 st.sidebar.title("서비스 정보 입력")
-service_type = st.sidebar.radio("서비스 유형", ["VM 기반 서비스", "AKS 서비스"], index=0 if st.session_state.service_type == "VM 기반 서비스" else 1)
-network_type = st.sidebar.radio("네트워크 연동 유형", ["공인망 연동", "내부망 연동"], index=0 if st.session_state.network_type == "공인망 연동" else 1)
+service_type = st.sidebar.selectbox("서비스 유형", [None, "VM 기반 서비스", "AKS 서비스"], index=0 if st.session_state.service_type is None else 
+                                   (1 if st.session_state.service_type == "VM 기반 서비스" else 2))
+network_type = st.sidebar.selectbox("네트워크 연동 유형", [None, "공인망 연동", "내부망 연동"], index=0 if st.session_state.network_type is None else 
+                                   (1 if st.session_state.network_type == "공인망 연동" else 2))
 service_abbr = st.sidebar.text_input("서비스 약어를 입력하세요", value=st.session_state.service_abbr)
 nas_usage = st.sidebar.checkbox("NAS 사용 여부", value=st.session_state.nas_usage)
 
@@ -279,12 +281,26 @@ if prompt := st.chat_input("메시지를 입력하세요..."):
             user_notes_section = f"\n\n사용자 분석 노트:\n{st.session_state.user_notes}"
         
         # 서비스 정보 추가
-        service_info = f"\n\n서비스 정보:\n- 서비스 유형: {service_type}\n- 네트워크 연동 유형: {network_type}\n- 서비스 약어: {service_abbr}\n- NAS 사용 여부: {'예' if nas_usage else '아니오'}"
+        service_info = "\n\n서비스 정보:"
+        if service_type is not None:
+            service_info += f"\n- 서비스 유형: {service_type}"
+        if network_type is not None:
+            service_info += f"\n- 네트워크 연동 유형: {network_type}"
+        if service_abbr:
+            service_info += f"\n- 서비스 약어: {service_abbr}"
+        service_info += f"\n- NAS 사용 여부: {'예' if nas_usage else '아니오'}"
         
         enhanced_prompt = f"{prompt}\n\n[파일 컨텍스트: {file_info}\n\n데이터 샘플:\n{data_sample}{stats_info}{dtypes_info}{null_info}{user_notes_section}{service_info}]"
     else:
         # 파일이 없는 경우에도 서비스 정보 추가
-        service_info = f"\n\n서비스 정보:\n- 서비스 유형: {service_type}\n- 네트워크 연동 유형: {network_type}\n- 서비스 약어: {service_abbr}\n- NAS 사용 여부: {'예' if nas_usage else '아니오'}"
+        service_info = "\n\n서비스 정보:"
+        if service_type is not None:
+            service_info += f"\n- 서비스 유형: {service_type}"
+        if network_type is not None:
+            service_info += f"\n- 네트워크 연동 유형: {network_type}"
+        if service_abbr:
+            service_info += f"\n- 서비스 약어: {service_abbr}"
+        service_info += f"\n- NAS 사용 여부: {'예' if nas_usage else '아니오'}"
         enhanced_prompt = f"{prompt}{service_info}"
     
     # 디버그 모드가 활성화된 경우 전체 프롬프트 표시
@@ -301,13 +317,13 @@ if prompt := st.chat_input("메시지를 입력하세요..."):
         
         with st.spinner("답변 생성 중..."):
             # Use streaming callback
-            response = create_agent().invoke(
+            response = create_agent_graph().invoke(
                 {"input": enhanced_prompt},
                 {"callbacks": [callback_handler]}
             )
             
-            # Get the final answer
-            answer = response["output"] if isinstance(response, dict) and "output" in response else str(response)
+            # Get the final answer - extract only the "answer" field from AgentState
+            answer = response.get("answer", "") if isinstance(response, dict) else str(response)
             
             # Save to session state
             st.session_state.messages.append({"role": "assistant", "content": answer})

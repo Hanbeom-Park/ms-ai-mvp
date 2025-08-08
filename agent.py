@@ -1,21 +1,29 @@
 import os
+from typing import TypedDict, Literal
 
 from dotenv import load_dotenv
 from langchain.agents import create_tool_calling_agent, AgentExecutor
-from langchain.memory import ConversationBufferMemory
+from langchain.memory import ConversationBufferWindowMemory
 from langchain_community.retrievers import AzureAISearchRetriever
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.tools import tool
 from langchain_openai import AzureChatOpenAI
+from langgraph.graph import StateGraph, END
 
-from template import SYSTEM_MESSAGE, AZURE_RESOURCE_SPEC_TEMPLATE, DETAILED_GUIDELINES_TEMPLATE, GENERAL_GUIDELINES_TEMPLATE
+from template import SYSTEM_MESSAGE, AZURE_RESOURCE_SPEC_TEMPLATE, DETAILED_GUIDELINES_TEMPLATE, \
+    GENERAL_GUIDELINES_TEMPLATE, CLASSIFY_INPUT_TEMPLATE, GENERATE_USER_MESSAGE
 
 load_dotenv()
 
 AZURE_OPENAI_LLM1 = os.getenv("AZURE_OPENAI_LLM1")
 AZURE_OPENAI_LLM2 = os.getenv("AZURE_OPENAI_LLM2")
+memory = ConversationBufferWindowMemory(
+    memory_key="chat_history",
+    return_messages=True,
+    k=5
+)
 
 def format_docs(docs):
     return "\n\n".join(doc.page_content for doc in docs)
@@ -35,34 +43,6 @@ def detailed_policy_search(query: str) -> str:
         streaming=False
     )
     prompt = ChatPromptTemplate.from_template(DETAILED_GUIDELINES_TEMPLATE)
-
-    search_chain = (
-            {
-                "context": retriever | format_docs,
-                "question": RunnablePassthrough()
-            }
-            | prompt
-            | llm
-            | StrOutputParser()
-    )
-    search_result = search_chain.invoke(query)
-    return search_result
-
-@tool
-def general_policy_search(query: str) -> str:
-    """회사 설계 가이드라인 문서에서 일반적인 정책 정보를 검색합니다.
-    이 함수는 단순 문의에 대한 응답으로 물어본 부분에 대해서만 답하는 도구입니다.
-    """
-    retriever = AzureAISearchRetriever(
-        content_key="chunk",
-        top_k=1,  # 간단한 문의에 대해 핵심적인 정보만 검색
-        index_name=os.getenv("AZURE_AI_SEARCH_INDEX_NAME"),
-    )
-    llm = AzureChatOpenAI(
-        deployment_name=os.getenv("AZURE_OPENAI_LLM2"),
-        streaming=False
-    )
-    prompt = ChatPromptTemplate.from_template(GENERAL_GUIDELINES_TEMPLATE)
 
     search_chain = (
             {
@@ -104,28 +84,82 @@ def generate_azure_resource_specs(query: str, search_result: str = None) -> str:
     final_result = resource_spec_chain.invoke(search_result)
     return final_result
 
-def create_agent():
-    tools = [detailed_policy_search, general_policy_search, generate_azure_resource_specs]
-    llm = AzureChatOpenAI(model=AZURE_OPENAI_LLM1, temperature=0, streaming=True)
+class AgentState(TypedDict):
+    input: str
+    input_type: Literal["simple_question", "spec_requirement"]
+    answer: str
+    spec: str
 
-    memory = ConversationBufferMemory(
-        memory_key="chat_history",
-        return_messages=True
+def classify_input(state: AgentState) -> AgentState:
+    prompt = ChatPromptTemplate.from_template(CLASSIFY_INPUT_TEMPLATE)
+    llm = AzureChatOpenAI(model=AZURE_OPENAI_LLM2, temperature=0)
+    chain = (prompt | llm | StrOutputParser())
+    result = chain.invoke(state["input"])
+    return {"input_type": result}
+
+def general_search(state: AgentState) -> AgentState:
+    retriever = AzureAISearchRetriever(
+        content_key="chunk",
+        top_k=1,
+        index_name=os.getenv("AZURE_AI_SEARCH_INDEX_NAME"),
     )
+    llm = AzureChatOpenAI(
+        deployment_name=os.getenv("AZURE_OPENAI_LLM2"),
+        streaming=True
+    )
+    prompt = ChatPromptTemplate.from_template(GENERAL_GUIDELINES_TEMPLATE)
+    chain = (
+            {
+                "context": retriever | format_docs,
+                "chat_history": lambda _: memory.buffer,
+                "question": RunnablePassthrough()
+            }
+            | prompt
+            | llm
+            | StrOutputParser()
+    )
+    result = chain.invoke(({"input": state["input"]}))
+    memory.chat_memory.add_user_message(state["input"])
+    memory.chat_memory.add_ai_message(result)
+    return {"answer": result}
+
+def generate_spec(state: AgentState) -> AgentState:
+    tools = [detailed_policy_search, generate_azure_resource_specs]
+    llm = AzureChatOpenAI(model=AZURE_OPENAI_LLM1, temperature=0, streaming=True)
     prompt = ChatPromptTemplate.from_messages([
         ("system", SYSTEM_MESSAGE),
-        ("user", "{input}"),
-        MessagesPlaceholder(variable_name="chat_history"),
+        ("user", GENERATE_USER_MESSAGE),
         MessagesPlaceholder(variable_name="agent_scratchpad")
+
     ])
-
     agent = create_tool_calling_agent(llm, tools, prompt)
-
     agent_executor = AgentExecutor(
         agent=agent,
         tools=tools,
         verbose=True,
-        memory=memory,
         return_intermediate_steps=True,
+        memory=memory
     )
-    return agent_executor
+    result = agent_executor.invoke({"input": state["input"]})
+    return {"answer": result}
+
+def where_to_go(state):
+  if state["input_type"] == "simple_question":
+    return "simple_question"
+  else:
+    return "spec_requirement"
+
+def create_agent_graph() -> StateGraph:
+    builder = StateGraph(AgentState)
+    builder.add_node("classify_input", classify_input)
+    builder.add_node("general_search", general_search)
+    builder.add_node("generate_spec", generate_spec)
+    builder.set_entry_point("classify_input")
+    builder.add_edge("classify_input", END)
+    builder.add_conditional_edges("classify_input",where_to_go,{
+        "simple_question": "general_search",
+        "spec_requirement": "generate_spec"
+    })
+    builder.add_edge("general_search", END)
+    builder.add_edge("generate_spec", END)
+    return builder.compile()
